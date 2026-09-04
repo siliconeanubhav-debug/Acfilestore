@@ -59,7 +59,7 @@ async def batch_handler(client: Client, message: Message):
 
     await status_msg.edit_text(f"✅ **सफलता!** कुल **{indexed_count}** फाइलें इंडेक्स हो गईं।")
 
-# --- GROUP SEARCH HANDLER (WITH SILENT MODE & RANGE EXTRACTOR) ---
+# --- GROUP SEARCH HANDLER (FIXED REPLY PARSER) ---
 @app.on_message(filters.group & filters.text)
 async def group_search_handler(client: Client, message: Message):
     query = message.text.strip()
@@ -72,7 +72,14 @@ async def group_search_handler(client: Client, message: Message):
             end_ep = int(range_match.group(2)) if range_match.group(2) else start_ep
             
             orig_text = message.reply_to_message.text
-            series_name = orig_text.split("`")[1] if "`" in orig_text else ""
+            series_name = ""
+
+            # 🟢 SAFE TITLE EXTRACTION FIX
+            if "`" in orig_text:
+                series_name = orig_text.split("`")[1].strip()
+            else:
+                first_line = orig_text.split("\n")[0]
+                series_name = first_line.replace("🎉", "").replace("उपलब्ध है!", "").strip()
 
             if series_name:
                 files = await get_range_files(series_name, start_ep, end_ep)
@@ -82,7 +89,7 @@ async def group_search_handler(client: Client, message: Message):
 
                 msg_ids = "-".join([str(f["msg_id"]) for f in files])
                 bot_username = (await client.get_me()).username
-                pm_url = f"https://t.me/{bot_username}?start=get_{msg_ids}"
+                pm_url = f"[https://t.me/](https://t.me/){bot_username}?start=get_{msg_ids}"
 
                 btn = InlineKeyboardMarkup([[
                     InlineKeyboardButton("📥 Get Episodes in PM", url=pm_url)
@@ -92,13 +99,13 @@ async def group_search_handler(client: Client, message: Message):
                     reply_markup=btn
                 )
 
-    # 2. Main Search (Silent Mode: Out of DB होने पर बिल्कुल शांत रहेगा)
+    # 2. Main Search Message Response (Silent Mode)
     all_titles = await get_all_titles()
     if not all_titles:
         return
 
     best_match, score = process.extractOne(query.lower(), all_titles)
-    if score >= 75:  # High precision match
+    if score >= 70:  # Precision Match
         episodes = await get_episodes_by_title(best_match)
         if not episodes:
             return
@@ -107,6 +114,7 @@ async def group_search_handler(client: Client, message: Message):
         max_ep = episodes[-1]["episode"]
         raw_title = episodes[0]["raw_title"]
 
+        # 🟢 BACKTICKS ADDED PROPERLY
         await message.reply(
             f"🎉 **`{raw_title}`** उपलब्ध है!\n\n"
             f"📌 **Available Episodes:** {min_ep} से {max_ep}\n"
@@ -123,7 +131,7 @@ async def start_handler(client: Client, message: Message):
             await client.get_chat_member(Config.AUTH_CHANNEL, message.from_user.id)
         except Exception:
             chat_info = await client.get_chat(Config.AUTH_CHANNEL)
-            invite_link = chat_info.invite_link or f"https://t.me/{chat_info.username}"
+            invite_link = chat_info.invite_link or f"[https://t.me/](https://t.me/){chat_info.username}"
             btn = InlineKeyboardMarkup([[
                 InlineKeyboardButton("📢 Join Channel First", url=invite_link)
             ]])
@@ -153,22 +161,18 @@ async def start_handler(client: Client, message: Message):
 
 # --- ASYNC MAIN RUNNER (RENDER COMPATIBLE) ---
 async def start_services():
-    # 1. Start Bot Client
     await app.start()
     print("Bot Started Successfully!")
 
-    # 2. Setup Aiohttp Web Application
     web_app = await web_server()
     app_runner = web.AppRunner(web_app)
     await app_runner.setup()
     
-    # Dynamic Port Handling for Render
     port = int(os.environ.get("PORT", Config.PORT))
     site = web.TCPSite(app_runner, "0.0.0.0", port)
     await site.start()
     print(f"Web Server running on port {port}")
 
-    # 3. Block Event Loop to Keep Bot Alive Forever
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
