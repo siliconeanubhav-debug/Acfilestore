@@ -1,0 +1,9 @@
+pyrogram
+pyromod
+tgcrypto
+motor
+pymongo
+fuzzywuzzy
+python-Levenshtein
+aiohttp
+
