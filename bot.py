@@ -59,12 +59,14 @@ async def batch_handler(client: Client, message: Message):
 
     await status_msg.edit_text(f"✅ **सफलता!** कुल **{indexed_count}** फाइलें इंडेक्स हो गईं।")
 
-# --- GROUP SEARCH HANDLER (FIXED REPLY PARSER) ---
+# --- GROUP SEARCH HANDLER (DIRECT QUERY WITH EPISODE PARSER) ---
 @app.on_message(filters.group & filters.text)
 async def group_search_handler(client: Client, message: Message):
     query = message.text.strip()
+    if query.startswith("/"):
+        return
 
-    # 1. Check Episode Range Reply (e.g., User replies "1-5" or "3")
+    # 1. रिप्लाई वाला तरीका (Backwards Compatibility)
     if message.reply_to_message and message.reply_to_message.from_user.is_self:
         range_match = re.match(r'^(\d+)(?:-(\d+))?$', query)
         if range_match:
@@ -73,8 +75,6 @@ async def group_search_handler(client: Client, message: Message):
             
             orig_text = message.reply_to_message.text
             series_name = ""
-
-            # 🟢 SAFE TITLE EXTRACTION FIX
             if "`" in orig_text:
                 series_name = orig_text.split("`")[1].strip()
             else:
@@ -83,13 +83,12 @@ async def group_search_handler(client: Client, message: Message):
 
             if series_name:
                 files = await get_range_files(series_name, start_ep, end_ep)
-
                 if not files:
                     return await message.reply("❌ मांगे गए एपिसोड डेटाबेस में उपलब्ध नहीं हैं।")
 
                 msg_ids = "-".join([str(f["msg_id"]) for f in files])
                 bot_username = (await client.get_me()).username
-                pm_url = f"[https://t.me/](https://t.me/){bot_username}?start=get_{msg_ids}"
+                pm_url = f"https://t.me/{bot_username}?start=get_{msg_ids}"
 
                 btn = InlineKeyboardMarkup([[
                     InlineKeyboardButton("📥 Get Episodes in PM", url=pm_url)
@@ -99,27 +98,62 @@ async def group_search_handler(client: Client, message: Message):
                     reply_markup=btn
                 )
 
-    # 2. Main Search Message Response (Silent Mode)
+    # 2. डायरेक्ट सर्च: क्वेरी से Episode नंबर / Range और Series Name को अलग करना
+    # Example: "Destined Bride 3", "Destined Bride Ep 1-5", "Destined Bride Episode 4"
+    ep_pattern = r'(?:ep|episode|episodes)?\s*(\d+)(?:\s*(?:to|-)\s*(\d+))?'
+    match = re.search(ep_pattern, query, re.IGNORECASE)
+
+    extracted_start_ep = None
+    extracted_end_ep = None
+    clean_query = query
+
+    if match and match.group(1):
+        extracted_start_ep = int(match.group(1))
+        extracted_end_ep = int(match.group(2)) if match.group(2) else extracted_start_ep
+        # सर्च मैचिंग के लिए मैसेज से एपिसोड वाला हिस्सा हटाना
+        clean_query = re.sub(ep_pattern, '', query, flags=re.IGNORECASE).strip()
+
     all_titles = await get_all_titles()
     if not all_titles:
         return
 
-    best_match, score = process.extractOne(query.lower(), all_titles)
-    if score >= 70:  # Precision Match
+    # टाइटल मैचिंग (साफ किए गए नाम के साथ)
+    best_match, score = process.extractOne(clean_query.lower(), all_titles)
+    if score >= 65:
         episodes = await get_episodes_by_title(best_match)
         if not episodes:
             return
 
-        min_ep = episodes[0]["episode"]
-        max_ep = episodes[-1]["episode"]
         raw_title = episodes[0]["raw_title"]
 
-        # 🟢 BACKTICKS ADDED PROPERLY
+        # 🟢 केस A: अगर यूजर ने मैसेज में ही Episode (1-5 या 3) लिख दिया था
+        if extracted_start_ep is not None:
+            files = await get_range_files(best_match, extracted_start_ep, extracted_end_ep)
+            if files:
+                msg_ids = "-".join([str(f["msg_id"]) for f in files])
+                bot_username = (await client.get_me()).username
+                pm_url = f"https://t.me/{bot_username}?start=get_{msg_ids}"
+
+                btn = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📥 Get Episodes in PM", url=pm_url)
+                ]])
+                return await message.reply(
+                    f"✨ **{raw_title}** (Episode {extracted_start_ep} - {extracted_end_ep}) तैयार हैं!\nनीचे बटन दबाकर PM में प्राप्त करें।",
+                    reply_markup=btn
+                )
+            else:
+                return await message.reply(f"❌ **{raw_title}** के एपिसोड {extracted_start_ep}-{extracted_end_ep} डेटाबेस में नहीं मिले।")
+
+        # 🟢 केस B: अगर सिर्फ कहानी का नाम लिखा है तो उपलब्ध एपिसोड की जानकारी देना
+        min_ep = episodes[0]["episode"]
+        max_ep = episodes[-1]["episode"]
+
         await message.reply(
             f"🎉 **`{raw_title}`** उपलब्ध है!\n\n"
             f"📌 **Available Episodes:** {min_ep} से {max_ep}\n"
-            f"👇 **कितने से कितने एपिसोड चाहिए?**\n"
-            f"*(उदाहरण: इस मैसेज पर `1-5` या `3` लिखकर रिप्लाई करें)*"
+            f"👇 **एपिसोड पाने के लिए:**\n"
+            f"• सीधे टाइप करें: `{raw_title} 3` या `{raw_title} 1-5`\n"
+            f"• या इस मैसेज पर `1-5` लिखकर रिप्लाई करें।"
         )
 
 # --- PM START & FILE DELIVERY (WITH FORCE SUB) ---
@@ -131,7 +165,7 @@ async def start_handler(client: Client, message: Message):
             await client.get_chat_member(Config.AUTH_CHANNEL, message.from_user.id)
         except Exception:
             chat_info = await client.get_chat(Config.AUTH_CHANNEL)
-            invite_link = chat_info.invite_link or f"[https://t.me/](https://t.me/){chat_info.username}"
+            invite_link = chat_info.invite_link or f"https://t.me/{chat_info.username}"
             btn = InlineKeyboardMarkup([[
                 InlineKeyboardButton("📢 Join Channel First", url=invite_link)
             ]])
