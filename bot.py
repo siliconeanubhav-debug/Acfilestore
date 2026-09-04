@@ -1,4 +1,6 @@
 import re
+import asyncio
+import os
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from pyromod import listen
@@ -149,17 +151,31 @@ async def start_handler(client: Client, message: Message):
             "🤖 **काम:** ग्रुप में ऑटो-सर्च और एपिसोड डिलीवरी।"
         )
 
-# --- START BOT & RENDER WEB SERVER ---
-async def main():
+# --- ASYNC MAIN RUNNER (RENDER COMPATIBLE) ---
+async def start_services():
+    # 1. Start Bot Client
     await app.start()
     print("Bot Started Successfully!")
-    
-    # Start Render Port Web Application
-    app_runner = web.AppRunner(await web_server())
+
+    # 2. Setup Aiohttp Web Application
+    web_app = await web_server()
+    app_runner = web.AppRunner(web_app)
     await app_runner.setup()
-    site = web.TCPSite(app_runner, "0.0.0.0", Config.PORT)
+    
+    # Dynamic Port Handling for Render
+    port = int(os.environ.get("PORT", Config.PORT))
+    site = web.TCPSite(app_runner, "0.0.0.0", port)
     await site.start()
-    print(f"Web Server running on port {Config.PORT}")
+    print(f"Web Server running on port {port}")
+
+    # 3. Block Event Loop to Keep Bot Alive Forever
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    app.run(main())
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(start_services())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.run_until_complete(app.stop())
